@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vertex Flip: Evolution</title>
+    <style>
+        body { margin: 0; background: #0a0a0a; color: white; font-family: 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; user-select: none; }
+        #game-container { position: relative; width: 600px; height: 400px; border: 4px solid #333; background: #000; transition: background 0.5s; }
+        canvas { display: block; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+        .hidden { display: none !important; }
+        h1 { margin: 0 0 10px 0; letter-spacing: 5px; text-shadow: 0 0 10px #fff; }
+        .btn { padding: 12px 40px; font-size: 1.1em; background: #222; color: white; border: 2px solid #555; cursor: pointer; margin: 8px; font-weight: bold; text-transform: uppercase; transition: 0.1s; }
+        .btn:hover { background: #444; border-color: #fff; transform: scale(1.05); }
+        .color-row { display: flex; gap: 15px; margin-bottom: 25px; }
+        .swatch { width: 45px; height: 45px; border: 3px solid #444; cursor: pointer; border-radius: 6px; transition: 0.2s; }
+        .swatch:hover { border-color: #888; }
+        .swatch.selected { border-color: white; transform: scale(1.15); box-shadow: 0 0 15px white; }
+        #hud { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 10; pointer-events: none; }
+        .score-text { font-size: 1.8em; font-weight: bold; }
+        #shield-indicator { color: #00d4ff; font-weight: bold; font-size: 0.9em; text-shadow: 0 0 5px #00d4ff; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="hud" class="hidden">
+        <div class="score-text">Lvl <span id="lvlVal">1</span> | Score: <span id="scoreVal">0</span></div>
+        <div id="shield-indicator" class="hidden">SHIELD ACTIVE</div>
+        <div id="multText" style="color: #ffd700; font-size: 0.9em; height: 20px;"></div>
+    </div>
+
+    <div id="menu-screen" class="overlay">
+        <h1>VERTEX FLIP</h1>
+        <div class="color-row">
+            <div class="swatch selected" data-color="#00d4ff" style="background:#00d4ff;"></div>
+            <div class="swatch" data-color="#ff00ff" style="background:#ff00ff;"></div>
+            <div class="swatch" data-color="#00ff88" style="background:#00ff88;"></div>
+            <div class="swatch" data-color="#ffffff" style="background:#ffffff;"></div>
+        </div>
+        <div class="btn" id="startBtn">Start Game</div>
+        <div style="font-size:0.75em; color:#888; margin-top:10px;">WASD TO MOVE (NORMAL)</div>
+    </div>
+
+    <div id="death-screen" class="overlay hidden">
+        <h2 style="color:#ff4b2b; font-size: 2.5em; margin:0;">CRASHED</h2>
+        <div id="finalScoreText" style="margin: 15px 0; font-size: 1.2em;"></div>
+        <div class="btn" id="retryBtn">Retry</div>
+        <div class="btn" id="homeBtn" style="background: #111; font-size: 0.8em;">Menu</div>
+    </div>
+
+    <canvas id="gameCanvas" width="600" height="400"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
+    const container = document.getElementById('game-container'), menuScreen = document.getElementById('menu-screen'), deathScreen = document.getElementById('death-screen'), hud = document.getElementById('hud');
+    const scoreVal = document.getElementById('scoreVal'), lvlVal = document.getElementById('lvlVal'), multText = document.getElementById('multText'), shieldInd = document.getElementById('shield-indicator'), finalScoreText = document.getElementById('finalScoreText');
+
+    let isRunning = false, score = 0, level = 1, playerColor = '#00d4ff', speedMult = 1.0, bonusTimer = 0, hasShield = false;
+    let obstacles = [], powerups = [], spawnRef, loopRef;
+    const player = { x: 285, y: 300, size: 30, speed: 6 }, keys = {};
+
+    // --- BUTTON EVENT LISTENERS (Mousedown for better response) ---
+    document.querySelectorAll('.swatch').forEach(s => {
+        s.addEventListener('mousedown', () => {
+            document.querySelectorAll('.swatch').forEach(sw => sw.classList.remove('selected'));
+            s.classList.add('selected');
+            playerColor = s.getAttribute('data-color');
+        });
+    });
+
+    document.getElementById('startBtn').addEventListener('mousedown', initGame);
+    document.getElementById('retryBtn').addEventListener('mousedown', initGame);
+    
+    document.getElementById('homeBtn').addEventListener('mousedown', () => {
+        isRunning = false;
+        cancelAnimationFrame(loopRef);
+        clearTimeout(spawnRef);
+        deathScreen.classList.add('hidden');
+        menuScreen.classList.remove('hidden');
+        hud.classList.add('hidden');
+        container.style.background = "#000";
+        ctx.clearRect(0,0,600,400);
+    });
+
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function initGame() {
+        // Reset State
+        score = 0; level = 1; speedMult = 1.0; bonusTimer = 0; hasShield = false;
+        obstacles = []; powerups = []; player.x = 285; player.y = 300;
+        
+        // UI
+        menuScreen.classList.add('hidden');
+        deathScreen.classList.add('hidden');
+        hud.classList.remove('hidden');
+        scoreVal.innerText = "0"; lvlVal.innerText = "1";
+        container.style.background = "#000";
+        
+        isRunning = true;
+        clearTimeout(spawnRef);
+        spawnManager();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function spawnManager() {
+        if (!isRunning) return;
+        let rand = Math.random();
+        if (rand < 0.12) { // 2X Score Orb
+            powerups.push({ x: Math.random()*570, y: -30, r: 12, s: (2.5+Math.random()*2)*speedMult, type: 'gold' });
+        } else if (rand < 0.17) { // Shield Orb
+            powerups.push({ x: Math.random()*570, y: -30, r: 10, s: (2.5+Math.random()*2)*speedMult, type: 'shield' });
+        } else { // Triangle
+            let sz = 22 + Math.random()*20;
+            obstacles.push({ x: Math.random()*(600-sz), y: -sz, size: sz, s: (2.5+Math.random()*3)*speedMult });
+        }
+        spawnRef = setTimeout(spawnManager, Math.max(150, 950 - (score * 3.5)));
+    }
+
+    function update() {
+        // MOVEMENT (Standard WASD)
+        if (keys['KeyW'] && player.y > 0) player.y -= player.speed;
+        if (keys['KeyS'] && player.y < 370) player.y += player.speed;
+        if (keys['KeyA'] && player.x > 0) player.x -= player.speed;
+        if (keys['KeyD'] && player.x < 570) player.x += player.speed;
+
+        if (bonusTimer > 0) {
+            bonusTimer--;
+            multText.innerText = `2X MULTIPLIER: ${(bonusTimer/60).toFixed(1)}s`;
+        } else multText.innerText = "";
+
+        shieldInd.classList.toggle('hidden', !hasShield);
+
+        // Level System
+        let newLvl = Math.floor(score / 50) + 1;
+        if (newLvl > level) {
+            level = newLvl;
+            lvlVal.innerText = level;
+            speedMult += 0.08;
+            container.style.background = `rgb(${level*8}, 0, ${level*4})`;
+        }
+
+        // Handle Obstacles
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            let o = obstacles[i]; o.y += o.s;
+            if (player.x < o.x + o.size && player.x + 30 > o.x && player.y < o.y + o.size && player.y + 30 > o.y) {
+                if (hasShield) { hasShield = false; obstacles.splice(i, 1); }
+                else gameOver();
+            }
+            if (o.y > 400) { 
+                obstacles.splice(i, 1); 
+                score += (bonusTimer > 0) ? 2 : 1; 
+                scoreVal.innerText = score; 
+            }
+        }
+
+        // Handle Powerups
+        for (let i = powerups.length - 1; i >= 0; i--) {
+            let p = powerups[i]; p.y += p.s;
+            let dist = Math.sqrt((p.x-(player.x+15))**2 + (p.y-(player.y+15))**2);
+            if (dist < 28) {
+                if (p.type === 'gold') bonusTimer = 1200;
+                else hasShield = true;
+                powerups.splice(i, 1);
+            } else if (p.y > 400) {
+                if (p.type === 'gold') speedMult *= 1.0175; // Penalty for missing gold
+                powerups.splice(i, 1);
+            }
+        }
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, 600, 400);
+        
+        // Player Draw
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = (bonusTimer > 0) ? "#ffd700" : playerColor;
+        ctx.fillStyle = (bonusTimer > 0) ? "#ffd700" : playerColor;
+        ctx.fillRect(player.x, player.y, 30, 30);
+        
+        if (hasShield) {
+            ctx.strokeStyle = "#00d4ff"; ctx.lineWidth = 3;
+            ctx.strokeRect(player.x - 5, player.y - 5, 40, 40);
+        }
+
+        // Obstacles Draw
+        ctx.shadowBlur = 5;
+        for (let o of obstacles) {
+            ctx.fillStyle = "#ff4b2b"; ctx.shadowColor = "red";
+            ctx.beginPath(); ctx.moveTo(o.x+o.size/2, o.y); ctx.lineTo(o.x, o.y+o.size); ctx.lineTo(o.x+o.size, o.y+o.size); ctx.fill();
+        }
+
+        // Powerups Draw
+        for (let p of powerups) {
+            ctx.fillStyle = (p.type === 'gold') ? "#ffd700" : "#00d4ff";
+            ctx.shadowColor = ctx.fillStyle;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+        }
+    }
+
+    function gameLoop() { 
+        if (!isRunning) return; 
+        update(); draw(); 
+        loopRef = requestAnimationFrame(gameLoop); 
+    }
+
+    function gameOver() { 
+        isRunning = false; 
+        clearTimeout(spawnRef); 
+        cancelAnimationFrame(loopRef); 
+        deathScreen.classList.remove('hidden'); 
+        finalScoreText.innerText = "FINAL SCORE: " + score; 
+    }
+</script>
+</body>
+</html>
